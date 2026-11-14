@@ -238,6 +238,7 @@ const UI = {
       ${opt('g-speed', 'Game speed', [[0.75, 'Slow'], [1, 'Normal'], [1.25, 'Fast']], s.speed)}
       ${opt('g-zoom', 'Camera', [['close', 'Close'], ['normal', 'Normal'], ['far', 'Wide']], s.zoom)}
       ${opt('g-art', 'Show play art', [[true, 'On'], [false, 'Off']], s.routeArt)}
+      ${opt('g-snd', 'Crowd & whistle sound', [[true, 'On'], [false, 'Off']], s.sound !== false)}
       </div><p class="muted small-txt">Playoff games always use overtime until there is a winner.</p>
       <div class="modal-btns"><button class="btn" onclick="UI.closeModal()">Cancel</button>${saveOnly ? `<button class="btn primary" onclick="UI.readGameSettings();UI.save();UI.closeModal();UI.toast('Game settings saved','good')">Save defaults</button>` : `<button class="btn primary big" onclick="UI.startGame()">Kick off ▶</button>`}</div>`, 'wide');
   },
@@ -247,7 +248,7 @@ const UI = {
     L.gameSettings = {
       quarterLen: +v('#g-q'), difficulty: v('#g-diff'), playMode: v('#g-mode'), runoff: +v('#g-run'), injuries: v('#g-inj'), fatigue: v('#g-fat'),
       subThreshold: +v('#g-sub'), penalties: v('#g-pen') === 'true', ot: v('#g-ot') === 'true', autoSwitch: v('#g-auto') === 'true',
-      speed: +v('#g-speed'), zoom: v('#g-zoom'), routeArt: v('#g-art') === 'true'
+      speed: +v('#g-speed'), zoom: v('#g-zoom'), routeArt: v('#g-art') === 'true', sound: v('#g-snd') === 'true'
     };
   },
   startGame() {

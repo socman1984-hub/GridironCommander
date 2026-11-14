@@ -4,7 +4,7 @@
 // x = 0..120 (own end line .. opponent end line; goal lines at 10 and 110), y = 0..53.33 (sideline to sideline).
 const Live = (() => {
   const FW = 120, FH = 53.33, HASH = [23.58, 29.75];
-  const ZOOM = { close: 34, normal: 46, far: 60 };
+  const ZOOM = { close: 40, normal: 56, far: 72 };
   let L, f, cfg, onDone, gameRef;
   let cv, ctx, W = 0, H = 0, DPR = 1, SC = 20;
   let state = 'idle', P = null, user = 0, ctrl = null;
@@ -58,6 +58,9 @@ const Live = (() => {
       try { if (de.requestFullscreen && !document.fullscreenElement) de.requestFullscreen().catch(() => {}); } catch (e) { /* ignore */ }
     }
     banners = []; floats = []; tickerLines = []; P = null; state = 'idle'; hudCache = ''; frameTi = user;
+    lastScore = [0, 0]; hype[0] = hype[1] = 0; benchFor = null; coachS = [60, 60];
+    genCrowd();
+    Sound.init(cfg.sound !== false);
     drawHelp();
     banner(`${f.teams[f.recvFirst].name} win the toss and will receive`, 'info');
     lastTs = performance.now();
@@ -76,6 +79,7 @@ const Live = (() => {
     window.removeEventListener('pointerup', onUp);
     window.removeEventListener('pointercancel', onUp);
     for (const k in keys) keys[k] = false;
+    Sound.stop();
     try { if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {}); } catch (e) { /* ignore */ }
     el('game').classList.add('hidden');
     el('overlay').innerHTML = '';
@@ -339,8 +343,11 @@ const Live = (() => {
     showPlayCall();
   }
 
+  let lastScore = [0, 0];
   function flushEvents() {
-    for (const ev of f.events) banner(ev.text, ev.kind);
+    for (let i = 0; i < 2; i++) if (f.score[i] > lastScore[i]) cheer(i, f.score[i] - lastScore[i] >= 6 ? 1 : 0.7);
+    lastScore = f.score.slice();
+    for (const ev of f.events) { banner(ev.text, ev.kind); if (ev.kind === 'turnover') cheer(f.poss, 0.8); }
     f.events = [];
     const last = f.pbp.slice(-4).map(x => x.text);
     tickerLines = last;
@@ -375,6 +382,20 @@ const Live = (() => {
     postTimer = 1.9;
     aiming = false;
     if (text) banner(text, kind);
+    Sound.whistle();
+    // crowd + sideline reactions, and a celebration for scores
+    if (P) {
+      const fr = P.frameTi;
+      let scorer = null;
+      if (res.kind === 'scrim') scorer = res.td ? fr : res.defTD ? 1 - fr : res.safety ? 1 - fr : null;
+      else if (res.kind === 'kickoff' || res.kind === 'punt') scorer = res.td ? (res.recovered ? fr : 1 - fr) : null;
+      else if ((res.kind === 'fg' || res.kind === 'xp') && res.good) scorer = fr;
+      if (scorer != null) { P.celebrate = scorer; postTimer = 2.6; cheer(scorer, res.kind === 'xp' ? 0.5 : 1); }
+      else if (res.turnover) cheer(1 - fr, 0.85);
+      else if (res.recovered) cheer(fr, 0.85);
+      else if (res.kind === 'scrim' && (res.yards || 0) >= 15) cheer(fr, 0.6);
+      else if (res.sack) cheer(1 - fr, 0.55);
+    }
   }
 
   function commit() {
@@ -418,9 +439,11 @@ const Live = (() => {
     state = 'paused';
     el('overlay').innerHTML = `<div class="ov-panel small"><h2>Paused</h2>
       <button class="btn primary" id="p-res">Resume</button>
+      <button class="btn" id="p-snd">Sound: ${Sound.isOn() ? 'On' : 'Off'}</button>
       <button class="btn" id="p-sim">Sim rest of game</button>
       <p class="muted small-txt">Esc / P to resume · H toggles controls</p></div>`;
     el('p-res').onclick = togglePause;
+    el('p-snd').onclick = () => { Sound.setOn(!Sound.isOn()); cfg.sound = Sound.isOn(); el('p-snd').textContent = `Sound: ${Sound.isOn() ? 'On' : 'Off'}`; };
     el('p-sim').onclick = () => simToEnd();
   }
   let prevOverlay = '', overlayBinder = null, prevBind = null;
@@ -1272,7 +1295,7 @@ const Live = (() => {
     const v = (14 + 14 * pow / 99) * (lob ? 0.72 : 1);
     const T = Math.hypot(lx - qb.x, ly - qb.y) / v + (lob ? 0.3 : 0.1);
     P.ball = { state: 'air', kind: 'pass', sx: qb.x, sy: qb.y, tx: lx, ty: ly, x: qb.x, y: qb.y, z: 2, t: 0, T, h: d * (lob ? 0.3 : 0.12) + 0.6, lob };
-    P.thrown = true; P.passer = qb; qb.canThrow = false;
+    P.thrown = true; P.passer = qb; qb.canThrow = false; P.throwT = P.t;
     f.st(qb.p, 'passAtt');
     // intended target and reactions
     let it = null, itd = 1e9;
@@ -2000,17 +2023,20 @@ const Live = (() => {
 
   function render(dt) {
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    ctx.fillStyle = '#0d2616';
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = '#1b2033';
     ctx.fillRect(0, 0, W, H);
+    animT += dt;
+    hype[0] = Math.max(0, hype[0] - dt * 0.3); hype[1] = Math.max(0, hype[1] - dt * 0.3);
     const t = camTarget();
     const tx = flip() ? FW - t.x : t.x;
     const k = Math.min(1, dt * 4);
     cam.x += (tx - cam.x) * k; cam.y += (t.y - cam.y) * k;
     const vh = H / SC;
     const lift = state === 'playcall' ? vh * 0.3 : 0;
-    if (vh >= FH + 6 && !lift) cam.y = FH / 2; else cam.y = U.clamp(cam.y, Math.min(vh / 2 - 3, FH / 2), Math.max(FH - vh / 2 + 3, FH / 2) + lift);
+    cam.y = U.clamp(cam.y, Math.min(vh / 2 - 11, FH / 2), Math.max(FH - vh / 2 + 11, FH / 2) + lift);
     const vw = W / SC;
-    cam.x = U.clamp(cam.x, vw / 2 - 6, FW - vw / 2 + 6);
+    cam.x = U.clamp(cam.x, vw / 2 - 14, FW - vw / 2 + 14);
     // play-call preview: fit the full field width into the space above the play menu
     let savedSC = null;
     if (state === 'playcall' && P && P.preview) {
@@ -2019,17 +2045,167 @@ const Live = (() => {
       const avail = Math.max(140, H - ph - top);
       savedSC = SC;
       SC = Math.min(avail / (FH + 3), W / 58);
-      const tx = P.los + 13;
-      cam.x = flip() ? FW - tx : tx;
+      const tx2 = P.los + 13;
+      cam.x = flip() ? FW - tx2 : tx2;
       cam.y = FH / 2 - (top + avail / 2 - H / 2) / SC;
     }
     drawField();
-    if (P) { drawArt(); drawEnts(); drawBall(); drawAim(); }
+    drawSideline(0);
+    if (P) { drawArt(); drawEnts(dt); drawBall(); drawAim(); }
+    drawSideline(1);
     drawFloats();
     drawMeter();
     if (savedSC != null) SC = savedSC;
   }
   function snapCam() { const t = camTarget(); cam.x = flip() ? FW - t.x : t.x; cam.y = t.y; }
+
+  // ---------- stadium: crowd, benches, coaches, cheerleaders ----------
+  let crowd = [], animT = 0, benchFor = null, bench = [[], []], coachS = [60, 60];
+  const hype = [0, 0];
+  const PIX = '"Press Start 2P", "Courier New", monospace';
+  const scr = (S, y) => [(S - cam.x) * SC + W / 2, (y - cam.y) * SC + H / 2];
+  // layout (yards beyond the sidelines)
+  const BENCH_Y = [-2.7, -4.0], COACH_Y = -1.5, WALL = [5.2, 5.9], ROW0 = 6.6, ROWH = 1.35;
+
+  function cheer(ti, lvl) {
+    if (ti == null || ti < 0) return;
+    hype[ti] = Math.max(hype[ti], lvl);
+    Sound.roar(lvl);
+  }
+
+  function genCrowd() {
+    crowd = [];
+    const rows = touchMode ? 5 : 7;
+    const others = ['#e5e7eb', '#9ca3af', '#f97316', '#1f2937', '#a16207', '#7c3aed', '#0f766e'];
+    for (let side = 0; side < 2; side++) {
+      const fav = f.teams[side], opp = f.teams[1 - side];
+      for (let r = 0; r < rows; r++) {
+        for (let S = -18; S < 138; S += 1.15) {
+          if (Math.random() < 0.13) continue;
+          if (((S + 300) % 24) < 1.3) continue; // aisles
+          const roll = Math.random();
+          const team = roll < 0.7 ? fav : roll < 0.85 ? opp : null;
+          crowd.push({
+            S: S + U.rf(-0.25, 0.25), side, r,
+            shirt: team ? (Math.random() < 0.65 ? team.c1 : team.c2) : U.pick(others),
+            skin: U.pick(Sprites.SKINS), ph: Math.random() * 6.283, rate: U.rf(5, 9),
+            sign: Math.random() < 0.025 ? (team || fav) : null, hat: Math.random() < 0.22 ? (team ? team.c2 : '#fff') : null,
+            fan: team ? f.teams.indexOf(team) : -1
+          });
+        }
+      }
+    }
+    // paint far rows first so near rows overlap them
+    crowd.sort((a, b) => (a.side - b.side) || (a.side === 0 ? b.r - a.r : a.r - b.r));
+  }
+
+  function drawStands() {
+    const vw = W / SC;
+    const x0 = cam.x - vw / 2 - 2, x1 = cam.x + vw / 2 + 2;
+    const rows = touchMode ? 5 : 7;
+    for (let side = 0; side < 2; side++) {
+      for (let r = rows; r >= 0; r--) {
+        const yA = side === 0 ? -(ROW0 + r * ROWH) : FH + ROW0 + r * ROWH;
+        const [a, b] = scr(-30, side === 0 ? yA - ROWH : yA), [c, d] = scr(150, side === 0 ? yA : yA + ROWH);
+        ctx.fillStyle = r % 2 ? '#3a4157' : '#323a50';
+        ctx.fillRect(a, b, c - a, d - b);
+      }
+      // padded wall in team colors
+      const tm = f.teams[side];
+      const [a, b] = scr(-30, side === 0 ? -WALL[1] : FH + WALL[0]), [c, d] = scr(150, side === 0 ? -WALL[0] : FH + WALL[1]);
+      ctx.fillStyle = tm.c1; ctx.fillRect(a, b, c - a, d - b);
+      ctx.fillStyle = tm.c2; ctx.fillRect(a, b + (d - b) * 0.42, c - a, Math.max(1, (d - b) * 0.16));
+      ctx.font = `${Math.max(6, SC * 0.42)}px ${PIX}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (let S = 0; S <= 120; S += 30) {
+        const [tx, ty] = scr(S + 15, side === 0 ? -(WALL[0] + WALL[1]) / 2 : FH + (WALL[0] + WALL[1]) / 2);
+        ctx.fillStyle = tm.c1; ctx.fillRect(tx - SC * 4.5, ty - SC * 0.3, SC * 9, SC * 0.6);
+        ctx.fillStyle = U.textOn(tm.c1);
+        ctx.fillText(tm.name.toUpperCase(), tx, ty);
+      }
+    }
+    // fans
+    const q = SC * 0.085;
+    for (const c of crowd) {
+      if (c.S < x0 || c.S > x1) continue;
+      const feetY = c.side === 0 ? -(ROW0 + c.r * ROWH) + 0.15 : FH + ROW0 + (c.r + 1) * ROWH - 0.15;
+      const [sx, sy] = scr(c.S, feetY);
+      const h = Math.min(1, (c.fan >= 0 ? hype[c.fan] : Math.max(hype[0], hype[1]) * 0.4) + 0.06);
+      const wave = h > 0.25 && Math.sin(animT * 4 - c.S * 0.18) > 0.7;
+      const jump = Math.abs(Math.sin(animT * c.rate + c.ph)) * q * 3 * h + (wave ? q * 2 : 0);
+      const armsUp = h > 0.45 ? Math.sin(animT * 7 + c.ph) > -0.3 : wave;
+      const y = sy - jump;
+      ctx.fillStyle = c.shirt; ctx.fillRect(sx - 2 * q, y - 5 * q, 4 * q, 3.5 * q);
+      if (armsUp) { ctx.fillRect(sx - 2.9 * q, y - 8.5 * q, q, 3.6 * q); ctx.fillRect(sx + 1.9 * q, y - 8.5 * q, q, 3.6 * q); }
+      ctx.fillStyle = c.skin; ctx.fillRect(sx - q, y - 7 * q, 2 * q, 2 * q);
+      if (c.hat) { ctx.fillStyle = c.hat; ctx.fillRect(sx - 1.2 * q, y - 7.6 * q, 2.4 * q, 0.9 * q); }
+      if (c.sign && (h > 0.3 || Math.sin(animT * 0.7 + c.ph) > 0.2)) {
+        ctx.fillStyle = '#f8fafc'; ctx.fillRect(sx - 3 * q, y - 12 * q, 6 * q, 3.5 * q);
+        ctx.fillStyle = c.sign.c1; ctx.fillRect(sx - 2.2 * q, y - 11.2 * q, 4.4 * q, 1.9 * q);
+      }
+    }
+  }
+
+  function buildBench() {
+    benchFor = P;
+    const on = new Set((P ? P.onField : []).map(p => p.id));
+    for (let i = 0; i < 2; i++) {
+      bench[i] = f.teams[i].roster.map(id => L.players[id]).filter(p => p && !on.has(p.id) && p.pos !== 'K' && p.pos !== 'P').slice(0, 24);
+    }
+  }
+
+  // side 0 = home sideline (top, drawn behind the players), side 1 = away sideline (bottom, drawn in front)
+  function drawSideline(side) {
+    if (side === 0) {
+      drawStands();
+      for (let s = 0; s < 2; s++) {
+        const [a, b] = scr(30, s === 0 ? -4.9 : FH + 0.6), [c, d] = scr(90, s === 0 ? -0.6 : FH + 4.9);
+        ctx.fillStyle = 'rgba(0,0,0,0.13)'; ctx.fillRect(a, b, c - a, d - b);
+        const [e1, e2] = scr(32, s === 0 ? -4.75 : FH + 4.35), [e3, e4] = scr(88, s === 0 ? -4.35 : FH + 4.75);
+        ctx.fillStyle = '#6b4f2a'; ctx.fillRect(e1, e2, e3 - e1, e4 - e2);
+        const [w1, w2] = scr(30.6, s === 0 ? -4.9 : FH + 3.7);
+        ctx.fillStyle = '#f97316'; ctx.fillRect(w1, w2, SC * 0.9, SC * 1.2);
+        ctx.fillStyle = '#fff'; ctx.fillRect(w1, w2 + SC * 0.25, SC * 0.9, SC * 0.18);
+      }
+    }
+    if (P !== benchFor) buildBench();
+    const px = SC * 0.1;
+    const ballS = P && P.ball ? (flip() ? FW - P.ball.x : P.ball.x) : 60;
+    const tm = f.teams[side];
+    const ys = side === 0 ? BENCH_Y : BENCH_Y.map(y => FH - y);
+    const h = hype[side];
+    bench[side].forEach((p, i) => {
+      const row = i % 2, S = 34 + Math.floor(i / 2) * 4.4 + row * 2.2;
+      const [sx, sy] = scr(S, ys[row]);
+      const up = h > 0.35 && Math.sin(animT * 6 + i) > -0.4;
+      const hop = up ? Math.abs(Math.sin(animT * 9 + i * 1.7)) * px * 4 : Math.sin(animT * 1.5 + i) > 0.97 ? px : 0;
+      drawSprite(Sprites.player(tm, p, up ? 'up' : 'stand', false), sx, sy - hop, px, ballS < S, 0);
+    });
+    // coach paces with the ball
+    const target = U.clamp(ballS, 38, 82);
+    coachS[side] += (target - coachS[side]) * 0.02;
+    const [cx, cy] = scr(coachS[side], side === 0 ? COACH_Y : FH - COACH_Y);
+    const pacing = Math.abs(target - coachS[side]) > 0.5;
+    const bob = h > 0.4 ? Math.abs(Math.sin(animT * 8)) * px * 3 : pacing ? Math.abs(Math.sin(animT * 8)) * px : 0;
+    drawSprite(Sprites.coach(tm), cx, cy - bob, px, ballS < coachS[side], 0);
+    // cheerleaders on the home sideline
+    if (side === 0) {
+      [12, 14.5, 17, 19.5, 100.5, 103, 105.5, 108].forEach((S, i) => {
+        const [sx, sy] = scr(S, -1.6);
+        const up = (h > 0.2 || Math.sin(animT * 2 + i) > 0.5) && Math.sin(animT * 5 + i * 0.9) > -0.2;
+        const hop = up ? Math.abs(Math.sin(animT * 7 + i)) * px * 3 : 0;
+        drawSprite(Sprites.cheer(tm, i, up), sx, sy - hop, px, i % 2 === 1, 0);
+      });
+    }
+  }
+
+  function drawSprite(img, sx, sy, px, faceLeft, rot) {
+    ctx.save();
+    ctx.translate(Math.round(sx), Math.round(sy));
+    if (rot) ctx.rotate(rot);
+    if (faceLeft) ctx.scale(-1, 1);
+    ctx.drawImage(img, -8 * px, -24 * px, 16 * px, 24 * px);
+    ctx.restore();
+  }
 
   function rect(x1, y1, x2, y2, color) {
     const [a, b] = w2s(x1, y1), [c, d] = w2s(x2, y2);
@@ -2046,48 +2222,58 @@ const Live = (() => {
 
   function drawField() {
     const fr = P ? P.frameTi : (f ? f.poss : 0);
-    rect(-10, -6, FW + 10, FH + 6, '#1f5a2e');
-    for (let x = 10; x < 110; x += 5) rect(x, 0, x + 5, FH, ((x - 10) / 5) % 2 ? '#2e7d3e' : '#2a7439');
+    rect(-14, -5.1, FW + 14, FH + 5.1, '#2c7a35');
+    for (let x = 10; x < 110; x += 5) rect(x, 0, x + 5, FH, ((x - 10) / 5) % 2 ? '#43a047' : '#3b9442');
     const own = f.teams[fr], opp = f.teams[1 - fr];
     rect(0, 0, 10, FH, own.c1);
     rect(110, 0, 120, FH, opp.c1);
-    // endzone text
+    ctx.globalAlpha = 0.12;
+    for (let y = 0; y < FH - 1; y += 2.5) for (let x = 0; x < 10; x += 2.5) if (((x + y) / 2.5) % 2 === 0) { rect(x, y, x + 2.5, y + 2.5, '#000'); rect(110 + x, y, 112.5 + x, y + 2.5, '#000'); }
+    ctx.globalAlpha = 1;
     ctx.save();
-    ctx.font = `bold ${Math.max(10, SC * 3.2)}px "Segoe UI", sans-serif`;
+    ctx.font = `${Math.max(8, SC * 2.2)}px ${PIX}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const [x, tm] of [[5, own], [115, opp]]) {
       const [sx, sy] = w2s(x, FH / 2);
       ctx.save(); ctx.translate(sx, sy); ctx.rotate((x < 60) !== flip() ? -Math.PI / 2 : Math.PI / 2);
-      ctx.fillStyle = tm.c2; ctx.globalAlpha = 0.85; ctx.fillText(tm.name.toUpperCase(), 0, 0); ctx.restore();
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillText(tm.name.toUpperCase(), 3, 3);
+      ctx.fillStyle = tm.c2; ctx.fillText(tm.name.toUpperCase(), 0, 0); ctx.restore();
     }
     ctx.restore();
+    // midfield logo (home team)
+    const hm = f.teams[0];
+    const [mx, my] = w2s(60, FH / 2);
+    ctx.fillStyle = hm.c1; ctx.globalAlpha = 0.55;
+    ctx.fillRect(mx - SC * 3.2, my - SC * 3.2, SC * 6.4, SC * 6.4);
+    ctx.globalAlpha = 1;
+    ctx.font = `${Math.max(7, SC * 1.5)}px ${PIX}`; ctx.fillStyle = hm.c2; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(hm.abbr, mx, my);
     // lines
-    for (let x = 10; x <= 110; x += 5) line(x, 0, x, FH, 'rgba(255,255,255,0.75)', x % 10 === 0 ? 2 : 1);
-    line(0, 0, FW, 0, '#fff', 2); line(0, FH, FW, FH, '#fff', 2); line(0, 0, 0, FH, '#fff', 2); line(FW, 0, FW, FH, '#fff', 2);
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = 1;
+    const lw = Math.max(2, SC * 0.18);
+    for (let x = 10; x <= 110; x += 5) line(x, 0, x, FH, 'rgba(255,255,255,0.85)', x % 10 === 0 ? lw : lw * 0.6);
+    line(0, 0, FW, 0, '#fff', lw * 1.6); line(0, FH, FW, FH, '#fff', lw * 1.6); line(0, 0, 0, FH, '#fff', lw * 1.6); line(FW, 0, FW, FH, '#fff', lw * 1.6);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
     for (let x = 11; x < 110; x++) {
       if (x % 5 === 0) continue;
-      for (const hy of [0.5, HASH[0], HASH[1], FH - 0.5]) {
-        const [a, b] = w2s(x, hy - 0.35), [c, d] = w2s(x, hy + 0.35);
-        ctx.beginPath(); ctx.moveTo(a, b); ctx.lineTo(c, d); ctx.stroke();
+      for (const hy of [0.6, HASH[0], HASH[1], FH - 0.6]) {
+        const [a, b] = w2s(x, hy - 0.35);
+        ctx.fillRect(a - lw * 0.3, b, lw * 0.6, SC * 0.7);
       }
     }
-    // numbers
-    ctx.fillStyle = 'rgba(255,255,255,0.8)';
-    ctx.font = `bold ${Math.max(9, SC * 1.8)}px "Segoe UI", sans-serif`;
+    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+    ctx.font = `${Math.max(7, SC * 1.35)}px ${PIX}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (let n = 1; n <= 9; n++) {
       const x = 10 + n * 10, lab = String(n <= 5 ? n * 10 : 100 - n * 10);
       for (const ny of [7, FH - 7]) { const [sx, sy] = w2s(x, ny); ctx.fillText(lab, sx, sy); }
     }
-    // goal posts
     for (const gx of [0, FW]) {
-      line(gx, 26.67 - 3.08, gx, 26.67 + 3.08, '#facc15', 4);
+      line(gx, 26.67 - 3.08, gx, 26.67 + 3.08, '#facc15', Math.max(3, SC * 0.3));
+      line(gx, 26.67, gx + (gx ? 1.5 : -1.5), 26.67, '#facc15', Math.max(3, SC * 0.3));
     }
-    // LOS / first down
     if (P && P.type === 'scrim' && state !== 'post') {
-      line(P.los, 0, P.los, FH, '#60a5fa', 2.5);
-      if (!P.twoPt && P.fdX < 110) line(P.fdX, 0, P.fdX, FH, '#facc15', 2.5);
+      line(P.los, 0, P.los, FH, '#60a5fa', lw * 1.2);
+      if (!P.twoPt && P.fdX < 110) line(P.fdX, 0, P.fdX, FH, '#facc15', lw * 1.2);
     }
   }
 
@@ -2118,44 +2304,48 @@ const Live = (() => {
     }
   }
 
-  function drawEnts() {
-    const r = Math.max(5, SC * 0.62);
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = `bold ${Math.max(8, r * 0.95)}px "Segoe UI", sans-serif`;
-    // draw defenders first, carrier last
-    const order = P.ents.slice().sort((a, b) => (a === P.ball.carrier) - (b === P.ball.carrier));
+  function drawEnts(dt) {
+    const px = SC * 0.1;
+    const order = P.ents.slice().sort((a, b) => a.y - b.y);
+    const carrier = P.ball && P.ball.state === 'held' ? P.ball.carrier : null;
+    const preview = P.preview && state === 'playcall';
     for (const e of order) {
       const tm = f.teams[e.ti];
-      const [sx, sy] = w2s(e.x, e.y);
-      ctx.globalAlpha = P.preview && state === 'playcall' && e.ti !== user ? 0.3 : e.down > 0 ? 0.45 : e.stun > 0 ? 0.7 : 1;
-      // shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.beginPath(); ctx.ellipse(sx + 2, sy + 3, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
-      if (e === ctrl) {
-        ctx.strokeStyle = '#fde047'; ctx.lineWidth = 3;
-        ctx.beginPath(); ctx.arc(sx, sy, r + 5, 0, Math.PI * 2); ctx.stroke();
-        ctx.fillStyle = '#fde047';
-        ctx.beginPath(); ctx.moveTo(sx, sy - r - 9); ctx.lineTo(sx - 6, sy - r - 18); ctx.lineTo(sx + 6, sy - r - 18); ctx.fill();
-      }
-      ctx.fillStyle = tm.c1;
-      ctx.strokeStyle = tm.c2; ctx.lineWidth = 2.5;
-      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      // facing tick
+      const [sx, sy0] = w2s(e.x, e.y);
+      const sy = sy0 + SC * 0.45;
       const sp = Math.hypot(e.vx, e.vy);
-      if (sp > 0.5) {
-        const dx = (flip() ? -e.vx : e.vx) / sp, dy = e.vy / sp;
-        ctx.strokeStyle = tm.c2; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.moveTo(sx + dx * r * 0.6, sy + dy * r * 0.6); ctx.lineTo(sx + dx * (r + 4), sy + dy * (r + 4)); ctx.stroke();
-      }
-      ctx.fillStyle = U.textOn(tm.c1);
-      ctx.fillText(e.p.num, sx, sy + 0.5);
-      if (e.move) { ctx.strokeStyle = '#f472b6'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx, sy, r + 2, 0, Math.PI * 2); ctx.stroke(); }
-      if (e.eng && e.engBlk) { ctx.strokeStyle = 'rgba(255,255,255,0.4)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(sx, sy, r + 1.5, 0, Math.PI * 2); ctx.stroke(); }
+      e.stepT = (e.stepT || 0) + sp * dt * 0.75;
+      if (Math.abs(e.vx) > 0.4) e.faceW = Math.sign(e.vx);
+      if (!e.faceW) e.faceW = e.side === 'O' ? 1 : -1;
+      let faceLeft = (flip() ? -e.faceW : e.faceW) < 0;
+      let pose = 'stand', rot = 0, hop = 0;
+      if (e.down > 0) rot = faceLeft ? -Math.PI / 2 : Math.PI / 2;
+      else if (e.dive > 0) { pose = 'reach'; rot = (faceLeft ? -1 : 1) * 1.1; }
+      else if (state === 'post' && P.celebrate === e.ti && P.ball && dist(e, P.ball) < 14) { pose = 'up'; hop = Math.abs(Math.sin(animT * 9 + e.x)) * px * 5; }
+      else if (e.eng) pose = 'reach';
+      else if (e.move && e.move.type === 'stiff') pose = 'stiff';
+      else if (P.passer === e && P.throwT != null && P.t - P.throwT < 0.35) pose = 'throw1';
+      else if (aiming && e === ctrl) pose = 'throw0';
+      else if ((state === 'presnap' || preview) && (e.role === 'ol' || e.role === 'dl')) pose = 'reach';
+      else if (sp > 0.6) pose = 'run' + (Math.floor(e.stepT) % 4);
+      if (e.move && e.move.type === 'spin') faceLeft = Math.floor(animT * 16) % 2 === 0;
+      if (e.move && e.move.type === 'juke') hop = px * 3;
+      const alpha = preview && e.ti !== user ? 0.3 : e.stun > 0 ? 0.75 : 1;
+      ctx.globalAlpha = alpha * 0.35; ctx.fillStyle = '#000';
+      ctx.beginPath(); ctx.ellipse(sx, sy, px * 5.5, px * 1.8, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      if (e === ctrl) { ctx.strokeStyle = '#fde047'; ctx.lineWidth = Math.max(2, px * 0.8); ctx.beginPath(); ctx.ellipse(sx, sy, px * 7.5, px * 2.6, 0, 0, Math.PI * 2); ctx.stroke(); }
+      ctx.globalAlpha = alpha;
+      drawSprite(Sprites.player(tm, e.p, pose, carrier === e && pose !== 'throw0'), sx, sy - hop, px, faceLeft, rot);
       if (e === ctrl) {
-        ctx.font = `600 ${Math.max(10, r * 0.85)}px "Segoe UI", sans-serif`;
-        ctx.fillStyle = '#fff';
-        ctx.fillText(`${e.p.pos} ${Data.name(e.p)}`, sx, sy + r + 12);
-        ctx.font = `bold ${Math.max(8, r * 0.95)}px "Segoe UI", sans-serif`;
+        const top = sy - hop - 27 * px;
+        ctx.fillStyle = '#fde047';
+        ctx.beginPath(); ctx.moveTo(sx, top); ctx.lineTo(sx - px * 3, top - px * 4); ctx.lineTo(sx + px * 3, top - px * 4); ctx.fill();
+        ctx.font = `${Math.max(7, SC * 0.38)}px ${PIX}`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+        const lab = `${e.p.pos} ${e.p.last.toUpperCase()}`;
+        ctx.fillStyle = '#000'; ctx.fillText(lab, sx + 1, sy + px * 3 + 1);
+        ctx.fillStyle = '#fff'; ctx.fillText(lab, sx, sy + px * 3);
+        ctx.textBaseline = 'middle';
       }
     }
     ctx.globalAlpha = 1;
@@ -2165,6 +2355,7 @@ const Live = (() => {
     const b = P.ball;
     if (!b || b.state === 'dead') return;
     if (b.state === 'held' && !b.carrier) { if (P.type === 'fg') { const [sx, sy] = w2s(b.x, b.y); drawFootball(sx, sy, 1); } return; }
+    if (b.state === 'held') return; // the carried ball is part of the player sprite
     const x = b.state === 'held' ? b.carrier.x + (flip() ? -0.35 : 0.35) * (b.carrier.side === 'O' ? 1 : -1) : b.x;
     const y = b.state === 'held' ? b.carrier.y + 0.15 : b.y;
     const [sx, sy] = w2s(x, y);
@@ -2208,7 +2399,7 @@ const Live = (() => {
   function drawFloats() {
     if (!P) return;
     ctx.textAlign = 'center';
-    ctx.font = `800 ${Math.max(11, SC * 0.7)}px "Segoe UI", sans-serif`;
+    ctx.font = `${Math.max(8, SC * 0.45)}px ${PIX}`;
     for (const fl of floats) {
       const [sx, sy] = w2s(fl.x, fl.y);
       ctx.globalAlpha = Math.min(1, fl.t * 2);

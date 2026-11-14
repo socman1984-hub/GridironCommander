@@ -4,7 +4,7 @@ const SAVE_KEY = 'gridiron_commander_save_v1';
 
 const DEFAULT_GAME_SETTINGS = {
   quarterLen: 5, difficulty: 'pro', playMode: 'full', runoff: 20, injuries: 'normal', fatigue: 'normal',
-  penalties: true, ot: true, autoSwitch: true, subThreshold: 55, speed: 1, zoom: 'normal', routeArt: true
+  penalties: true, ot: true, autoSwitch: true, subThreshold: 55, speed: 1, zoom: 'normal', routeArt: true, sound: true
 };
 
 const League = {
